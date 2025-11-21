@@ -1,0 +1,62 @@
+version: '3.9'
+
+services:
+
+  mongo:
+    image: mongo:7.0
+    container_name: mongo
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  auth-service:
+    build: ./auth-service
+    container_name: auth-service
+    restart: always
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./auth-service/.env
+    volumes:
+      - ./auth-service:/app 
+      - /app/node_modules       
+      - ./config:/config:ro        
+    depends_on:
+      - mongo
+
+
+  service-inventory:
+    build: ./service-inventory
+    container_name: service-inventory
+    restart: always
+    ports:
+      - "5001:5001"
+    env_file:
+      - ./service-inventory/.env
+    volumes:
+      - ./service-inventory:/app    
+      - /app/node_modules    
+      - ./config:/config:ro        
+    depends_on:
+      - mongo
+
+
+  technician-service:
+    build: ./technician-service
+    container_name: technician-service
+    restart: always
+    ports:
+      - "5002:5002"
+    env_file:
+      - ./technician-service/.env
+    volumes:
+      - ./technician-service:/app
+      - /app/node_modules       
+      - ./config:/config:ro        
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:
