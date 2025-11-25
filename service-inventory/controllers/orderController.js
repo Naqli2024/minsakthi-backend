@@ -890,14 +890,13 @@ exports.generateBOM = async (req, res) => {
   try {
     const { orderId } = req.params;
     const {
-      serviceType,               // "custom" | "general"
-      materialItems = [],        // [{ itemName, qty, unitPrice }]
+      serviceType,
+      materialItems = [],
       serviceCharge = 0,
       additionalCharges = 0,
-      taxPercentage = 18         // default 18%
+      taxPercentage = 18
     } = req.body;
 
-    // Fetch order
     const order = await Order.findOne({ orderId });
     if (!order) {
       return res.status(404).json({
@@ -906,7 +905,9 @@ exports.generateBOM = async (req, res) => {
       });
     }
 
-    // Check if issueAnalysis -> Initial Observation is completed:
+    // -------------------------
+    // STEP 1: Validate initial observation
+    // -------------------------
     const issueAnalysis = order.processes.find(
       (p) =>
         p.processName === "Issue or Installation Analysis" ||
@@ -933,13 +934,280 @@ exports.generateBOM = async (req, res) => {
       });
     }
 
+    // -------------------------
+    // STEP 2: Find BOM Preparation process
+    // -------------------------
+    const adminReviewProcess = order.processes.find(
+      (p) =>
+        p.processName === "Admin Review & BOM Calculation" ||
+        p.processName === "நிர்வாகி மதிப்பாய்வு மற்றும் பொருள் பட்டியல் (BOM) கணக்கீடு"
+    );
+
+    if (!adminReviewProcess) {
+      return res.status(400).json({
+        success: false,
+        message: "Admin Review & BOM Calculation process not found",
+      });
+    }
+
+    const bomPreparation = adminReviewProcess.subProcesses.find(
+      (s) =>
+        s.name === "BOM Preparation" ||
+        s.name === "பொருள் பட்டியல் தயாரித்தல்"
+    );
+
+    if (!bomPreparation) {
+      return res.status(400).json({
+        success: false,
+        message: "BOM Preparation step missing in order",
+      });
+    }
+
+    // -------------------------
+    // STEP 3: Generate BOM (General or Custom)
+    // -------------------------
     let materialCost = 0;
 
-    // ---------------------------
-    // CASE 1: GENERAL SERVICE
-    // ---------------------------
     if (serviceType === "general") {
-      // Assume order.generalServicePrice was pre-stored on order creation
+
+      const fixedPrice = order.generalServicePrice || 0;
+      const taxAmount = (fixedPrice * taxPercentage) / 100;
+      const totalPayable = fixedPrice + taxAmount;
+
+      order.billOfMaterial = {
+        serviceType: "general",
+        materialItems: [],
+        materialCost: 0,
+        serviceCharge: fixedPrice,
+        additionalCharges: 0,
+        subtotal: fixedPrice,
+        taxPercentage,
+        taxAmount,
+        totalPayable,
+        generatedAt: new Date(),
+        bomStatus: "Pending"
+      };
+
+    } else if (serviceType === "custom") {
+
+      materialCost = materialItems.reduce(
+        (sum, item) => sum + item.qty * item.unitPrice,
+        0
+      );
+
+      const subtotal = materialCost + serviceCharge + additionalCharges;
+      const taxAmount = (subtotal * taxPercentage) / 100;
+      const totalPayable = subtotal + taxAmount;
+
+      order.billOfMaterial = {
+        serviceType: "custom",
+        materialItems,
+        materialCost,
+        serviceCharge,
+        additionalCharges,
+        subtotal,
+        taxPercentage,
+        taxAmount,
+        totalPayable,
+        generatedAt: new Date(),
+        bomStatus: "Pending"
+      };
+
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid serviceType. Allowed: custom | general",
+      });
+    }
+
+    // -------------------------
+    // STEP 4: Mark BOM Preparation as completed
+    // -------------------------
+    bomPreparation.isCompleted = true;
+    bomPreparation.completedAt = new Date();
+
+    // You can update main process status if needed:
+    adminReviewProcess.status = "Completed";
+
+    // -------------------------
+    // STEP 5: Save order
+    // -------------------------
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "BOM generated successfully",
+      bom: order.billOfMaterial,
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: "Unable to generate BOM",
+      error: err.message,
+    });
+  }
+};
+
+// BOM accepted/rejected
+exports.updateBOMStatus = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status, rejectionReason } = req.body;
+    const userId = req.user?._id;
+
+    if (!["Approved", "Rejected"].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status. Allowed: Approved | Rejected"
+      });
+    }
+
+    const order = await Order.findOne({ orderId });
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found"
+      });
+    }
+
+    if (!order.billOfMaterial) {
+      return res.status(400).json({
+        success: false,
+        message: "No existing BOM found"
+      });
+    }
+
+    // -------------------------
+    // UPDATE BOM STATUS
+    // -------------------------
+    order.billOfMaterial.bomStatus = status;
+
+    if (status === "Approved") {
+      order.billOfMaterial.bomApprovedAt = new Date();
+      order.billOfMaterial.bomApprovedBy = userId;
+      order.billOfMaterial.rejectionReason = null;
+    }
+
+    if (status === "Rejected") {
+      order.billOfMaterial.rejectionReason = rejectionReason || "No reason provided";
+      order.billOfMaterial.bomApprovedAt = null;
+      order.billOfMaterial.bomApprovedBy = null;
+    }
+
+    // -----------------------------------------------------
+    // UPDATE PROCESS → "Quotation & Client Approval"
+    // SUBPROCESS → "Approval Confirmation"
+    // -----------------------------------------------------
+    const quotationProcess = order.processes.find(
+      (p) =>
+        p.processName === "Quotation & Client Approval" ||
+        p.processName === "மதிப்பீடு மற்றும் வாடிக்கையாளர் ஒப்புதல்"
+    );
+
+    if (!quotationProcess) {
+      return res.status(400).json({
+        success: false,
+        message: "Quotation & Client Approval process not found"
+      });
+    }
+
+    const approvalSubProcess = quotationProcess.subProcesses.find(
+      (s) =>
+        s.name === "Approval Confirmation" ||
+        s.name === "ஒப்புதல் உறுதிப்படுத்தல்"
+    );
+
+    if (!approvalSubProcess) {
+      return res.status(400).json({
+        success: false,
+        message: "Approval Confirmation sub-process not found"
+      });
+    }
+
+    // Mark sub-process as completed
+    approvalSubProcess.isCompleted = true;
+    approvalSubProcess.completedAt = new Date();
+
+    // (Optional) Mark whole process completed if all sub-processes done
+    const allCompleted = quotationProcess.subProcesses.every((sp) => sp.isCompleted);
+    if (allCompleted) {
+      quotationProcess.status = "Completed";
+      quotationProcess.completedAt = new Date();
+    }
+
+    // -------------------------
+    // SAVE ORDER
+    // -------------------------
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `BOM status updated to ${status}`,
+      bom: order.billOfMaterial
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: "Unable to update BOM status",
+      error: err.message
+    });
+  }
+};
+
+// edit BOM
+exports.editBOM = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const {
+      serviceType,
+      materialItems = [],
+      serviceCharge = 0,
+      additionalCharges = 0,
+      taxPercentage = 18,
+    } = req.body;
+
+    const order = await Order.findOne({ orderId });
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    if (!order.billOfMaterial) {
+      return res.status(400).json({ success: false, message: "BOM does not exist" });
+    }
+
+    // BLOCK EDITING if user has already approved quotation
+    const quotationProcess = order.processes.find(
+      (p) =>
+        p.processName === "Quotation & Client Approval" ||
+        p.processName === "மதிப்பீடு மற்றும் வாடிக்கையாளர் ஒப்புதல்"
+    );
+
+    if (quotationProcess) {
+      const approvalStep = quotationProcess.subProcesses.find(
+        (s) =>
+          s.name === "Approval Confirmation" ||
+          s.name === "ஒப்புதல் உறுதிப்படுத்தல்"
+      );
+
+      if (approvalStep && approvalStep.isCompleted === true) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "BOM cannot be edited because the client has already approved the quotation",
+        });
+      }
+    }
+
+    // RESET APPROVAL STATUS (When editing BOM)
+    order.billOfMaterial.bomStatus = "Pending";
+    order.billOfMaterial.bomApprovedAt = null;
+    order.billOfMaterial.bomApprovedBy = null;
+
+
+    // CASE 1: GENERAL SERVICE BOM
+    if (serviceType === "general") {
       const fixedPrice = order.generalServicePrice || 0;
 
       const taxAmount = (fixedPrice * taxPercentage) / 100;
@@ -956,37 +1224,29 @@ exports.generateBOM = async (req, res) => {
         taxAmount,
         totalPayable,
         generatedAt: new Date(),
+        bomStatus: "Pending",
       };
 
       await order.save();
 
       return res.status(200).json({
         success: true,
-        message: "BOM generated for general service",
+        message: "General BOM updated successfully",
         bom: order.billOfMaterial,
       });
     }
 
-    // ---------------------------
-    // CASE 2: CUSTOM SERVICE
-    // ---------------------------
+    // CASE 2: CUSTOM SERVICE BOM
     if (serviceType === "custom") {
+      const materialCost = materialItems.reduce(
+        (sum, item) => sum + item.qty * item.unitPrice,
+        0
+      );
 
-      // Calculate material cost
-      materialCost = materialItems.reduce((sum, item) => {
-        return sum + item.qty * item.unitPrice;
-      }, 0);
-
-      // Subtotal before tax
       const subtotal = materialCost + serviceCharge + additionalCharges;
-
-      // Tax
       const taxAmount = (subtotal * taxPercentage) / 100;
-
-      // Final total
       const totalPayable = subtotal + taxAmount;
 
-      // Save BOM into order
       order.billOfMaterial = {
         serviceType: "custom",
         materialItems,
@@ -998,29 +1258,146 @@ exports.generateBOM = async (req, res) => {
         taxAmount,
         totalPayable,
         generatedAt: new Date(),
+        bomStatus: "Pending",
       };
 
       await order.save();
 
       return res.status(200).json({
         success: true,
-        message: "Custom BOM generated successfully",
+        message: "Custom BOM updated successfully",
         bom: order.billOfMaterial,
       });
     }
 
-    // ---------------------------
-    // INVALID SERVICE TYPE
-    // ---------------------------
-    res.status(400).json({
+    // INVALID TYPE
+    return res.status(400).json({
       success: false,
-      message: "Invalid serviceType. Allowed: custom, general",
+      message: "Invalid serviceType",
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: "Unable to edit BOM",
+      error: err.message,
+    });
+  }
+};
+
+// delete BOM
+exports.deleteBOM = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const order = await Order.findOne({ orderId });
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found"
+      });
+    }
+
+    if (!order.billOfMaterial) {
+      return res.status(400).json({
+        success: false,
+        message: "No BOM found to delete"
+      });
+    }
+
+    // ------------------------------------------
+    // BLOCK DELETE IF USER HAS APPROVED QUOTATION
+    // ------------------------------------------
+    const quotationProcess = order.processes.find(
+      (p) =>
+        p.processName === "Quotation & Client Approval" ||
+        p.processName === "மதிப்பீடு மற்றும் வாடிக்கையாளர் ஒப்புதல்"
+    );
+
+    if (quotationProcess) {
+      const approvalStep = quotationProcess.subProcesses.find(
+        (s) =>
+          s.name === "Approval Confirmation" ||
+          s.name === "ஒப்புதல் உறுதிப்படுத்தல்"
+      );
+
+      if (approvalStep && approvalStep.isCompleted === true) {
+        return res.status(403).json({
+          success: false,
+          message: "BOM cannot be deleted because user has already approved the quotation"
+        });
+      }
+    }
+
+    // -----------------------------
+    // DELETE THE BOM
+    // -----------------------------
+    order.billOfMaterial = null;
+
+    // --------------------------------------------
+    // RESET "BOM Preparation" isCompleted = false
+    // --------------------------------------------
+    const adminReviewProcess = order.processes.find(
+      (p) =>
+        p.processName === "Admin Review & BOM Calculation" ||
+        p.processName === "நிர்வாகி மதிப்பாய்வு மற்றும் பொருள் பட்டியல் (BOM) கணக்கீடு"
+    );
+
+    if (adminReviewProcess) {
+      const bomPrep = adminReviewProcess.subProcesses.find(
+        (s) =>
+          s.name === "BOM Preparation" ||
+          s.name === "பொருள் பட்டியல் தயாரித்தல்"
+      );
+
+      if (bomPrep) {
+        bomPrep.isCompleted = false;
+        bomPrep.completedAt = null;
+      }
+    }
+
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "BOM deleted successfully and process updated"
     });
 
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Unable to generate BOM",
+      message: "Unable to delete BOM",
+      error: err.message
+    });
+  }
+};
+
+// get BOM by orderId
+exports.getBOMByOrderId = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const order = await Order.findOne({ orderId });
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    if (!order.billOfMaterial) {
+      return res.status(404).json({
+        success: false,
+        message: "No BOM generated yet for this order",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      bom: order.billOfMaterial,
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: "Unable to fetch BOM",
       error: err.message,
     });
   }

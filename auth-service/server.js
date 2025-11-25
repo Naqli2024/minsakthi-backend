@@ -39,7 +39,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api', userRoutes);
 
 const PORT = process.env.PORT;
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Auth service running on port ${PORT}`);
 });
 

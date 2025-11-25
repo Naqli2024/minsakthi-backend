@@ -16,7 +16,12 @@ const {
   verifyArrivalOTP,
   initialObservationReport,
   technicianReportReview,
-  generateBOM
+  generateBOM,
+  bomAcceptanceByUser,
+  updateBOMStatus,
+  editBOM,
+  deleteBOM,
+  getBOMByOrderId
 } = require("../controllers/orderController");
 const authMiddleware = require("../middleware/authMiddleware");
 const technicianAuthMiddleware = require("../middleware/technicianAuthMiddleware");
@@ -32,7 +37,7 @@ router.post(
 );
 router.get("/orders", authMiddleware, getAllOrders);
 router.get("/orders/customer/:id", authMiddleware, findOrdersByCustomer);
-router.get("/find-order/:orderId", authMiddleware, findOrderByOrderId);
+router.get("/find-order/:orderId", findOrderByOrderId);
 router.delete("/orders/:orderId", authMiddleware, deleteOrderByOrderId);
 router.delete(
   "/find-order-deleted/:customerId",
@@ -54,5 +59,13 @@ router.post("/order/:orderId/initial-observation", technicianAuthMiddleware, ini
 router.post("/order/:orderId/admin-review", authMiddleware, technicianReportReview);
 // Generate BOM
 router.post("/order/:orderId/generateBOM", authMiddleware, generateBOM);
+// BOM accepted/rejected
+router.post("/order/:orderId/bom-status", authMiddleware, updateBOMStatus);
+// EDIT BOM
+router.put("/order/:orderId/bom/edit", authMiddleware, editBOM);
+// DELETE BOM
+router.delete("/order/:orderId/bom/delete", authMiddleware, deleteBOM);
+// GET BOM By OrderId
+router.get("/order/:orderId/bom", authMiddleware, getBOMByOrderId);
 
 module.exports = router;

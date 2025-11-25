@@ -23,8 +23,16 @@ const bomSchema = new mongoose.Schema(
     taxAmount: { type: Number, default: 0 },
     totalPayable: { type: Number, default: 0 },
     generatedAt: { type: Date, default: null },
+    bomStatus: {
+      type: String,
+      enum: ["Pending", "Approved", "Rejected", "None"],
+      default: "Pending",
+    },
+    rejectedReason: { type: String, default: null },
+    bomApprovedAt: { type: Date, default: null },
+    bomApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
   },
-  { _id: false } 
+  { _id: false }
 );
 
 
