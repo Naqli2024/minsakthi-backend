@@ -560,9 +560,8 @@ exports.assignTechnicianToOrder = async (req, res) => {
         let name;
 
         if (tech.data.technicianType === "Individual") {
-          name = `${tech.data.firstName || ""} ${
-            tech.data.lastName || ""
-          }`.trim();
+          name = `${tech.data.firstName || ""} ${tech.data.lastName || ""
+            }`.trim();
         } else if (tech.data.technicianType === "Organization") {
           name =
             tech.data.organizationDetails?.organizationName || "Organization";
@@ -855,7 +854,7 @@ exports.technicianReportReview = async (req, res) => {
       (p) =>
         p.processName === "Admin Review & BOM Calculation" ||
         p.processName ===
-          "நிர்வாகி மதிப்பாய்வு மற்றும் பொருள் பட்டியல் (BOM) கணக்கீடு"
+        "நிர்வாகி மதிப்பாய்வு மற்றும் பொருள் பட்டியல் (BOM) கணக்கீடு"
     );
     if (!adminReview) {
       return res
@@ -1125,15 +1124,32 @@ exports.updateBOMStatus = async (req, res) => {
       });
     }
 
-    // Mark sub-process as completed
-    approvalSubProcess.isCompleted = true;
-    approvalSubProcess.completedAt = new Date();
+    // UPDATE PROCESS SUBPROCESSES BASED ON STATUS
+    if (status === "Approved") {
+      // Mark ALL sub-processes under "Quotation & Client Approval" as completed
+      quotationProcess.subProcesses.forEach((sp) => {
+        sp.isCompleted = true;
+        sp.completedAt = new Date();
+      });
 
-    // (Optional) Mark whole process completed if all sub-processes done
-    const allCompleted = quotationProcess.subProcesses.every((sp) => sp.isCompleted);
-    if (allCompleted) {
+      // Also mark main process completed
       quotationProcess.status = "Completed";
       quotationProcess.completedAt = new Date();
+    }
+
+    if (status === "Rejected") {
+      // Only mark the "Approval Confirmation" subprocess as completed
+      // (Because rejection is confirmed by admin)
+      const approvalSubProcess = quotationProcess.subProcesses.find(
+        (s) =>
+          s.name === "Approval Confirmation" ||
+          s.name === "ஒப்புதல் உறுதிப்படுத்தல்"
+      );
+
+      if (approvalSubProcess) {
+        approvalSubProcess.isCompleted = true;
+        approvalSubProcess.completedAt = new Date();
+      }
     }
 
     // -------------------------
@@ -1399,6 +1415,115 @@ exports.getBOMByOrderId = async (req, res) => {
       success: false,
       message: "Unable to fetch BOM",
       error: err.message,
+    });
+  }
+};
+
+// step - 5: Order Execution 
+exports.updateOrderExecution = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { updates } = req.body; 
+
+    const order = await Order.findOne({ orderId });
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    // Strict Check — BOM must be approved
+    if (
+      !order.billOfMaterial ||
+      order.billOfMaterial.bomStatus !== "Approved"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Order Execution cannot start until BOM is approved."
+      });
+    }
+
+    // Check if Quotation & Client Approval is completed
+    const quotationProcess = order.processes.find(
+      (p) =>
+        p.processName === "Quotation & Client Approval" ||
+        p.processName === "மதிப்பீடு மற்றும் வாடிக்கையாளர் ஒப்புதல்"
+    );
+
+    if (!quotationProcess || quotationProcess.status !== "Completed") {
+      return res.status(400).json({
+        success: false,
+        message: "Order Execution cannot start until Quotation & Client Approval is completed."
+      });
+    }
+
+    // Find the Order Execution Process
+    const executionProcess = order.processes.find(
+      (p) =>
+        p.processName === "Order Execution" ||
+        p.processName === "ஆணை செயல்படுத்தல்"
+    );
+
+    if (!executionProcess) {
+      return res.status(400).json({
+        success: false,
+        message: "Order Execution process not found."
+      });
+    }
+
+    // Update subProcesses based on request
+    executionProcess.subProcesses.forEach((sub) => {
+      if (sub.name === "Material Procurement" || sub.name === "பொருள் கொள்முதல்") {
+        if (updates.materialProcurement) {
+          sub.materialProcurement = updates.materialProcurement;
+          if (updates.materialProcurement === "completed") {
+            sub.isCompleted = true;
+            sub.completedAt = new Date();
+          }
+        }
+      }
+
+      if (sub.name === "Job Execution" || sub.name === "பணி செயல்படுத்தல்") {
+        if (updates.jobExecution) {
+          sub.jobExecution = updates.jobExecution;
+          if (updates.jobExecution === "completed") {
+            sub.isCompleted = true;
+            sub.completedAt = new Date();
+          }
+        }
+      }
+
+      if (sub.name === "Work Verification" || sub.name === "பணி சரிபார்த்தல்") {
+        if (updates.workVerified !== undefined) {
+          sub.workVerified = updates.workVerified;
+          if (updates.workVerified === true) {
+            sub.isCompleted = true;
+            sub.completedAt = new Date();
+          }
+        }
+      }
+    });
+
+    // If all subProcesses completed → mark process completed
+    const allDone = executionProcess.subProcesses.every((s) => s.isCompleted);
+
+    if (allDone) {
+      executionProcess.status = "Completed";
+      executionProcess.completedAt = new Date();
+    }
+
+    // Save the order
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Order Execution updated successfully",
+      process: executionProcess
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: "Unable to update Order Execution",
+      error: err.message
     });
   }
 };

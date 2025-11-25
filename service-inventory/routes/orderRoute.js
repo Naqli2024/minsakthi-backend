@@ -21,7 +21,8 @@ const {
   updateBOMStatus,
   editBOM,
   deleteBOM,
-  getBOMByOrderId
+  getBOMByOrderId,
+  updateOrderExecution
 } = require("../controllers/orderController");
 const authMiddleware = require("../middleware/authMiddleware");
 const technicianAuthMiddleware = require("../middleware/technicianAuthMiddleware");
@@ -67,5 +68,7 @@ router.put("/order/:orderId/bom/edit", authMiddleware, editBOM);
 router.delete("/order/:orderId/bom/delete", authMiddleware, deleteBOM);
 // GET BOM By OrderId
 router.get("/order/:orderId/bom", authMiddleware, getBOMByOrderId);
+// order execution
+router.put("/order/:orderId/execution", technicianAuthMiddleware, updateOrderExecution);
 
 module.exports = router;
