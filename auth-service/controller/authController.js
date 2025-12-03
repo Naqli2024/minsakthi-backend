@@ -42,6 +42,18 @@ exports.register = async (req, res) => {
 
     await newUser.save();
 
+    // ADD NOTIFICATION AFTER USER CREATED
+    await User.findByIdAndUpdate(newUser._id, {
+      $push: {
+        notifications: {
+          title: "Account Created",
+          message: `Welcome ${fullName}! Your account has been registered successfully.`,
+          createdAt: new Date(),
+          isRead: false,
+        },
+      },
+    });
+
     // Create verification token
     const token = jwt.sign(
       { userId: newUser._id, emailAddress: newUser.emailAddress },
@@ -54,11 +66,9 @@ exports.register = async (req, res) => {
     // Send email
     await sendVerificationEmail(newUser.emailAddress, token);
 
-    res
-      .status(201)
-      .json({
-        message: `Account created. Please verify your email ${newUser.emailAddress}`,
-      });
+    res.status(201).json({
+      message: `Account created. Please verify your email ${newUser.emailAddress}`,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: err.message });
@@ -364,6 +374,18 @@ exports.resetPassword = async (req, res) => {
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     user.password = hashedPassword;
     await user.save();
+
+    // ADD NOTIFICATION
+    await User.findByIdAndUpdate(user._id, {
+      $push: {
+        notifications: {
+          title: "Password Reset Successful",
+          message: "Your account password has been changed successfully.",
+          createdAt: new Date(),
+          isRead: false
+        }
+      }
+    });
 
     res.status(200).json({
       success: true,

@@ -6,6 +6,26 @@ const DeletedOrder = require("../models/deletedOrder");
 const ProcessTemplate = require("../models/processTemplateSchema");
 const axios = require("axios");
 
+// Add notification
+const addNotification = async (userId, title, message) => {
+  try {
+    // Send notification update to user-service
+    await axios.put(
+      `${process.env.USER_SERVICE_URL}/api/users/${userId}/notifications`,
+      {
+        title,
+        message,
+        createdAt: new Date(),
+        isRead: false,
+      }
+    );
+
+    console.log(`Notification added for user: ${userId}`);
+  } catch (error) {
+    console.error("Error updating notification:", error.message);
+  }
+};
+
 // Create new order
 exports.createOrder = async (req, res) => {
   try {
@@ -132,6 +152,33 @@ exports.createOrder = async (req, res) => {
     // Step 6: Save order
     const newOrder = new Order(orderData);
     await newOrder.save();
+
+    // Send Notification to the User
+    await addNotification(
+      user._id,
+      "Order Created",
+      `Your order ${newOrder.orderId} has been created successfully.`
+    );
+
+    // Fetch Admin Users from User Service
+    let adminUsers = [];
+    try {
+      const response = await axios.get(
+        `${process.env.USER_SERVICE_URL}/api/getAllUsers`
+      );
+      adminUsers = response.data.data?.filter((u) => u.isAdmin === true) || [];
+    } catch (error) {
+      console.error("Error fetching admins:", error.message);
+    }
+
+    // Send Notification to all Admins
+    for (const admin of adminUsers) {
+      await addNotification(
+        admin._id,
+        "New Order Received",
+        `A new order ${newOrder.orderId} has been placed by ${user.fullName}.`
+      );
+    }
 
     return res.status(201).json({
       success: true,
@@ -260,6 +307,13 @@ exports.deleteOrderByOrderId = async (req, res) => {
 
     // Remove from active orders
     await Order.deleteOne({ orderId });
+
+    // Send notification to the customer
+    await addNotification(
+      order.customer,
+      "Order Deleted",
+      `Your order ${orderId} has been deleted successfully.`
+    );
 
     return res.status(200).json({
       success: true,
@@ -492,10 +546,10 @@ exports.assignTechnicianToOrder = async (req, res) => {
     }
 
     const TECHNICIAN_SERVICE_URL = process.env.TECHNICIAN_SERVICE_URL;
+    const USER_SERVICE_URL = process.env.USER_SERVICE_URL;
 
     // Fetch Order
     const order = await Order.findOne({ orderId });
-
     if (!order) {
       return res
         .status(404)
@@ -537,6 +591,7 @@ exports.assignTechnicianToOrder = async (req, res) => {
     // LOOP TECHNICIAN IDs
     for (let technicianId of technicianIds) {
       let tech;
+
       try {
         const url = `${TECHNICIAN_SERVICE_URL}/api/technician/${technicianId}`;
         const response = await axios.get(url);
@@ -560,8 +615,9 @@ exports.assignTechnicianToOrder = async (req, res) => {
         let name;
 
         if (tech.data.technicianType === "Individual") {
-          name = `${tech.data.firstName || ""} ${tech.data.lastName || ""
-            }`.trim();
+          name = `${tech.data.firstName || ""} ${
+            tech.data.lastName || ""
+          }`.trim();
         } else if (tech.data.technicianType === "Organization") {
           name =
             tech.data.organizationDetails?.organizationName || "Organization";
@@ -584,7 +640,7 @@ exports.assignTechnicianToOrder = async (req, res) => {
       try {
         const updateUrl = `${TECHNICIAN_SERVICE_URL}/api/technician/${technicianId}/update`;
 
-        const updateResponse = await axios.put(updateUrl, {
+        await axios.put(updateUrl, {
           availabilityStatus: "Busy",
           orderId: orderId,
         });
@@ -593,6 +649,20 @@ exports.assignTechnicianToOrder = async (req, res) => {
           success: false,
           message: `Failed to update technician status in microservice: ${technicianId}`,
         });
+      }
+
+      // SEND NOTIFICATION TO TECHNICIAN
+      try {
+        await axios.post(
+          `${TECHNICIAN_SERVICE_URL}/add-technician-notification`,
+          {
+            technicianId,
+            title: "New Order Assigned",
+            message: `You have been assigned to order ${orderId}`,
+          }
+        );
+      } catch (err) {
+        console.error("Failed to notify technician:", err.message);
       }
     }
 
@@ -610,9 +680,28 @@ exports.assignTechnicianToOrder = async (req, res) => {
     // Save order
     await order.save();
 
+    // SEND NOTIFICATION TO ADMINS (USER SERVICE)
+    try {
+      const usersRes = await axios.get(`${USER_SERVICE_URL}/api/getAllUsers`);
+      const adminUsers = usersRes.data.data.filter((u) => u.isAdmin === true);
+
+      for (let admin of adminUsers) {
+        await axios.put(
+          `${USER_SERVICE_URL}/users/${admin._id}/notifications`,
+          {
+            title: "Technician Assigned",
+            message: `Technician(s) assigned to order ${orderId}`,
+            createdAt: new Date(),
+          }
+        );
+      }
+    } catch (err) {
+      console.error("Failed to notify admins:", err.message);
+    }
+
     return res.status(200).json({
       success: true,
-      message: "Technicians assigned successfully",
+      message: "Technicians assigned successfully and notifications sent",
       data: order,
     });
   } catch (err) {
@@ -750,6 +839,34 @@ exports.verifyArrivalOTP = async (req, res) => {
 
     await order.save();
 
+    // SEND NOTIFICATION TO ADMINS
+    try {
+      // 1. Fetch all users from User Service
+      const response = await axios.get(
+        `${process.env.USER_SERVICE_URL}/api/getAllUsers`
+      );
+
+      const allUsers = response.data?.data || [];
+
+      // 2. Filter admins
+      const adminUsers = allUsers.filter((u) => u.isAdmin === true);
+
+      // 3. For each admin → push notification through User service
+      await Promise.all(
+        adminUsers.map((admin) =>
+          axios.put(
+            `${process.env.USER_SERVICE_URL}/api/users/${admin._id}/notifications`,
+            {
+              title: "Technician Arrival Confirmed",
+              message: `Technician arrival has been verified for Order ID: ${orderId}`,
+            }
+          )
+        )
+      );
+    } catch (notifyErr) {
+      console.error("Notification Error:", notifyErr.message);
+    }
+
     res.status(200).json({
       success: true,
       message: "OTP verified successfully",
@@ -825,6 +942,35 @@ exports.initialObservationReport = async (req, res) => {
 
     await order.save();
 
+    // SEND NOTIFICATION TO ADMINS
+    try {
+      // 1. Fetch all users from User Service
+      const response = await axios.get(
+        `${process.env.USER_SERVICE_URL}/api/getAllUsers`
+      );
+      const allUsers = response.data?.data || [];
+
+      // 2. Filter Admins
+      const adminUsers = allUsers.filter((u) => u.isAdmin === true);
+
+      // 3. Notification
+      const title =
+        "Initial Observation Completed (ஆரம்பக் கண்காணிப்பு முடிந்தது)";
+      const message = `Initial observation for Order ID: ${orderId} has been completed by the technician.`;
+
+      // 4. Send notifications to all admins
+      await Promise.all(
+        adminUsers.map((admin) =>
+          axios.put(
+            `${process.env.USER_SERVICE_URL}/api/users/${admin._id}/notifications`,
+            { title, message }
+          )
+        )
+      );
+    } catch (notifyErr) {
+      console.error("Notification Error:", notifyErr.message);
+    }
+
     res.status(200).json({
       success: true,
       message: "Initial observation saved successfully",
@@ -854,7 +1000,7 @@ exports.technicianReportReview = async (req, res) => {
       (p) =>
         p.processName === "Admin Review & BOM Calculation" ||
         p.processName ===
-        "நிர்வாகி மதிப்பாய்வு மற்றும் பொருள் பட்டியல் (BOM) கணக்கீடு"
+          "நிர்வாகி மதிப்பாய்வு மற்றும் பொருள் பட்டியல் (BOM) கணக்கீடு"
     );
     if (!adminReview) {
       return res
@@ -893,7 +1039,7 @@ exports.generateBOM = async (req, res) => {
       materialItems = [],
       serviceCharge = 0,
       additionalCharges = 0,
-      taxPercentage = 18
+      taxPercentage = 18,
     } = req.body;
 
     const order = await Order.findOne({ orderId });
@@ -904,9 +1050,7 @@ exports.generateBOM = async (req, res) => {
       });
     }
 
-    // -------------------------
     // STEP 1: Validate initial observation
-    // -------------------------
     const issueAnalysis = order.processes.find(
       (p) =>
         p.processName === "Issue or Installation Analysis" ||
@@ -922,8 +1066,7 @@ exports.generateBOM = async (req, res) => {
 
     const initialObs = issueAnalysis.subProcesses.find(
       (s) =>
-        s.name === "Initial Observation" ||
-        s.name === "ஆரம்பக் கண்காணிப்பு"
+        s.name === "Initial Observation" || s.name === "ஆரம்பக் கண்காணிப்பு"
     );
 
     if (!initialObs || !initialObs.isCompleted) {
@@ -933,13 +1076,12 @@ exports.generateBOM = async (req, res) => {
       });
     }
 
-    // -------------------------
     // STEP 2: Find BOM Preparation process
-    // -------------------------
     const adminReviewProcess = order.processes.find(
       (p) =>
         p.processName === "Admin Review & BOM Calculation" ||
-        p.processName === "நிர்வாகி மதிப்பாய்வு மற்றும் பொருள் பட்டியல் (BOM) கணக்கீடு"
+        p.processName ===
+          "நிர்வாகி மதிப்பாய்வு மற்றும் பொருள் பட்டியல் (BOM) கணக்கீடு"
     );
 
     if (!adminReviewProcess) {
@@ -951,8 +1093,7 @@ exports.generateBOM = async (req, res) => {
 
     const bomPreparation = adminReviewProcess.subProcesses.find(
       (s) =>
-        s.name === "BOM Preparation" ||
-        s.name === "பொருள் பட்டியல் தயாரித்தல்"
+        s.name === "BOM Preparation" || s.name === "பொருள் பட்டியல் தயாரித்தல்"
     );
 
     if (!bomPreparation) {
@@ -962,13 +1103,10 @@ exports.generateBOM = async (req, res) => {
       });
     }
 
-    // -------------------------
     // STEP 3: Generate BOM (General or Custom)
-    // -------------------------
     let materialCost = 0;
 
     if (serviceType === "general") {
-
       const fixedPrice = order.generalServicePrice || 0;
       const taxAmount = (fixedPrice * taxPercentage) / 100;
       const totalPayable = fixedPrice + taxAmount;
@@ -984,11 +1122,9 @@ exports.generateBOM = async (req, res) => {
         taxAmount,
         totalPayable,
         generatedAt: new Date(),
-        bomStatus: "Pending"
+        bomStatus: "Pending",
       };
-
     } else if (serviceType === "custom") {
-
       materialCost = materialItems.reduce(
         (sum, item) => sum + item.qty * item.unitPrice,
         0
@@ -1009,9 +1145,8 @@ exports.generateBOM = async (req, res) => {
         taxAmount,
         totalPayable,
         generatedAt: new Date(),
-        bomStatus: "Pending"
+        bomStatus: "Pending",
       };
-
     } else {
       return res.status(400).json({
         success: false,
@@ -1019,26 +1154,58 @@ exports.generateBOM = async (req, res) => {
       });
     }
 
-    // -------------------------
     // STEP 4: Mark BOM Preparation as completed
-    // -------------------------
     bomPreparation.isCompleted = true;
     bomPreparation.completedAt = new Date();
 
     // You can update main process status if needed:
     adminReviewProcess.status = "Completed";
 
-    // -------------------------
     // STEP 5: Save order
-    // -------------------------
     await order.save();
+
+    // STEP 6: SEND NOTIFICATIONS
+    try {
+      // A) Send notification to Admins
+      const usersResponse = await axios.get(
+        `${process.env.USER_SERVICE_URL}/api/getAllUsers`
+      );
+      const allUsers = usersResponse.data?.data || [];
+      const adminUsers = allUsers.filter((u) => u.isAdmin === true);
+
+      const adminTitle = "BOM Prepared (பொருள் பட்டியல் தயாரிக்கப்பட்டது)";
+      const adminMessage = `BOM has been prepared for Order ID: ${orderId}.`;
+
+      await Promise.all(
+        adminUsers.map((admin) =>
+          axios.put(
+            `${process.env.USER_SERVICE_URL}/api/users/${admin._id}/notifications`,
+            { title: adminTitle, message: adminMessage }
+          )
+        )
+      );
+
+      // B) Send notification to Customer
+      const customerId = order.customer;
+
+      if (customerId) {
+        const custTitle = "BOM Ready for Your Order";
+        const custMessage = `BOM has been prepared for your order: ${orderId}.`;
+
+        await axios.put(
+          `${process.env.USER_SERVICE_URL}/api/users/${customerId}/notifications`,
+          { title: custTitle, message: custMessage }
+        );
+      }
+    } catch (notificationErr) {
+      console.error("Notification Error:", notificationErr.message);
+    }
 
     return res.status(200).json({
       success: true,
       message: "BOM generated successfully",
       bom: order.billOfMaterial,
     });
-
   } catch (err) {
     return res.status(500).json({
       success: false,
@@ -1058,7 +1225,7 @@ exports.updateBOMStatus = async (req, res) => {
     if (!["Approved", "Rejected"].includes(status)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid status. Allowed: Approved | Rejected"
+        message: "Invalid status. Allowed: Approved | Rejected",
       });
     }
 
@@ -1066,20 +1233,18 @@ exports.updateBOMStatus = async (req, res) => {
     if (!order) {
       return res.status(404).json({
         success: false,
-        message: "Order not found"
+        message: "Order not found",
       });
     }
 
     if (!order.billOfMaterial) {
       return res.status(400).json({
         success: false,
-        message: "No existing BOM found"
+        message: "No existing BOM found",
       });
     }
 
-    // -------------------------
     // UPDATE BOM STATUS
-    // -------------------------
     order.billOfMaterial.bomStatus = status;
 
     if (status === "Approved") {
@@ -1089,7 +1254,8 @@ exports.updateBOMStatus = async (req, res) => {
     }
 
     if (status === "Rejected") {
-      order.billOfMaterial.rejectionReason = rejectionReason || "No reason provided";
+      order.billOfMaterial.rejectionReason =
+        rejectionReason || "No reason provided";
       order.billOfMaterial.bomApprovedAt = null;
       order.billOfMaterial.bomApprovedBy = null;
     }
@@ -1107,7 +1273,7 @@ exports.updateBOMStatus = async (req, res) => {
     if (!quotationProcess) {
       return res.status(400).json({
         success: false,
-        message: "Quotation & Client Approval process not found"
+        message: "Quotation & Client Approval process not found",
       });
     }
 
@@ -1120,7 +1286,7 @@ exports.updateBOMStatus = async (req, res) => {
     if (!approvalSubProcess) {
       return res.status(400).json({
         success: false,
-        message: "Approval Confirmation sub-process not found"
+        message: "Approval Confirmation sub-process not found",
       });
     }
 
@@ -1152,22 +1318,72 @@ exports.updateBOMStatus = async (req, res) => {
       }
     }
 
-    // -------------------------
     // SAVE ORDER
-    // -------------------------
     await order.save();
+
+    // SEND NOTIFICATIONS (ADMIN + USER)
+    try {
+      const usersResponse = await axios.get(
+        `${process.env.USER_SERVICE_URL}/api/getAllUsers`
+      );
+
+      const allUsers = usersResponse.data?.data || [];
+      const adminUsers = allUsers.filter((u) => u.isAdmin === true);
+      const customerId = order.customer;
+
+      let adminTitle = "";
+      let adminMessage = "";
+      let customerTitle = "";
+      let customerMessage = "";
+
+      if (status === "Approved") {
+        adminTitle = "BOM Approved";
+        adminMessage = `BOM for Order ID: ${orderId} has been approved.`;
+
+        customerTitle = "BOM Approved";
+        customerMessage = `Your BOM for Order ${orderId} has been approved.`;
+      }
+
+      if (status === "Rejected") {
+        adminTitle = "BOM Rejected";
+        adminMessage = `BOM for Order ID: ${orderId} has been rejected.`;
+
+        customerTitle = "BOM Rejected";
+        customerMessage = `Your BOM for order ${orderId} has been rejected. Reason: ${rejectionReason}`;
+      }
+
+
+      // A) Notify all admins
+      await Promise.all(
+        adminUsers.map((admin) =>
+          axios.put(
+            `${process.env.USER_SERVICE_URL}/api/users/${admin._id}/notifications`,
+            { title: adminTitle, message: adminMessage }
+          )
+        )
+      );
+
+      // B) Notify customer
+      if (customerId) {
+        await axios.put(
+          `${process.env.USER_SERVICE_URL}/api/users/${customerId}/notifications`,
+          { title: customerTitle, message: customerMessage }
+        );
+      }
+    } catch (errNotification) {
+      console.log("Notification error:", errNotification.message);
+    }
 
     return res.status(200).json({
       success: true,
       message: `BOM status updated to ${status}`,
-      bom: order.billOfMaterial
+      bom: order.billOfMaterial,
     });
-
   } catch (err) {
     return res.status(500).json({
       success: false,
       message: "Unable to update BOM status",
-      error: err.message
+      error: err.message,
     });
   }
 };
@@ -1184,16 +1400,22 @@ exports.editBOM = async (req, res) => {
       taxPercentage = 18,
     } = req.body;
 
+    const USER_SERVICE_URL = process.env.USER_SERVICE_URL;
+
     const order = await Order.findOne({ orderId });
     if (!order) {
-      return res.status(404).json({ success: false, message: "Order not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
     }
 
     if (!order.billOfMaterial) {
-      return res.status(400).json({ success: false, message: "BOM does not exist" });
+      return res
+        .status(400)
+        .json({ success: false, message: "BOM does not exist" });
     }
 
-    // BLOCK EDITING if user has already approved quotation
+    // 1) BLOCK EDITING IF CLIENT ALREADY APPROVED
     const quotationProcess = order.processes.find(
       (p) =>
         p.processName === "Quotation & Client Approval" ||
@@ -1216,16 +1438,15 @@ exports.editBOM = async (req, res) => {
       }
     }
 
-    // RESET APPROVAL STATUS (When editing BOM)
+    // 2) RESET APPROVAL STATUS (Whenever BOM is edited)
     order.billOfMaterial.bomStatus = "Pending";
     order.billOfMaterial.bomApprovedAt = null;
     order.billOfMaterial.bomApprovedBy = null;
+    order.billOfMaterial.rejectionReason = null;
 
-
-    // CASE 1: GENERAL SERVICE BOM
+    // 3) APPLY CHANGES (GENERAL / CUSTOM)
     if (serviceType === "general") {
       const fixedPrice = order.generalServicePrice || 0;
-
       const taxAmount = (fixedPrice * taxPercentage) / 100;
       const totalPayable = fixedPrice + taxAmount;
 
@@ -1245,6 +1466,50 @@ exports.editBOM = async (req, res) => {
 
       await order.save();
 
+      // send notifications (admins + customer)
+      try {
+        // fetch admins
+        const usersRes = await axios.get(
+          `${USER_SERVICE_URL}/api/getAllUsers`
+        );
+        const users = usersRes.data?.data || [];
+        const adminUsers = users.filter((u) => u.isAdmin === true);
+
+        const adminTitle = "BOM Updated";
+        const adminMessage = `General BOM has been updated for Order ${orderId}.`;
+
+        // notify admins in parallel (do not fail main flow on error)
+        await Promise.all(
+          adminUsers.map((admin) =>
+            axios.put(
+              `${USER_SERVICE_URL}/api/users/${admin._id}/notifications`,
+              {
+                title: adminTitle,
+                message: adminMessage,
+                createdAt: new Date(),
+              }
+            ).catch(err => { console.error("Admin notify error:", err.message); })
+          )
+        );
+
+        // determine customer id (best-effort: support different shapes)
+        const customerId =
+          order.customer;
+
+        if (customerId) {
+          await axios.put(
+            `${USER_SERVICE_URL}/api/users/${customerId}/notifications`,
+            {
+              title: "Quotation Updated",
+              message: `BOM has been updated for your order ${orderId}.`,
+              createdAt: new Date(),
+            }
+          ).catch(err => { console.error("Customer notify error:", err.message); });
+        }
+      } catch (notifyErr) {
+        console.error("Notification flow error (general):", notifyErr.message);
+      }
+
       return res.status(200).json({
         success: true,
         message: "General BOM updated successfully",
@@ -1252,7 +1517,7 @@ exports.editBOM = async (req, res) => {
       });
     }
 
-    // CASE 2: CUSTOM SERVICE BOM
+    // CUSTOM serviceType
     if (serviceType === "custom") {
       const materialCost = materialItems.reduce(
         (sum, item) => sum + item.qty * item.unitPrice,
@@ -1279,6 +1544,49 @@ exports.editBOM = async (req, res) => {
 
       await order.save();
 
+      // send notifications (admins + customer)
+      try {
+        // fetch admins
+        const usersRes = await axios.get(
+          `${USER_SERVICE_URL}/api/getAllUsers`
+        );
+        const users = usersRes.data?.data || [];
+        const adminUsers = users.filter((u) => u.isAdmin === true);
+
+        const adminTitle = "BOM Updated";
+        const adminMessage = `Custom BOM has been updated for Order ${orderId}.`;
+
+        await Promise.all(
+          adminUsers.map((admin) =>
+            axios.put(
+              `${USER_SERVICE_URL}/api/users/${admin._id}/notifications`,
+              {
+                title: adminTitle,
+                message: adminMessage,
+                createdAt: new Date(),
+              }
+            ).catch(err => { console.error("Admin notify error:", err.message); })
+          )
+        );
+
+        // determine customer id (best-effort)
+        const customerId =
+          order.customer;
+
+        if (customerId) {
+          await axios.put(
+            `${USER_SERVICE_URL}/api/users/${customerId}/notifications`,
+            {
+              title: "Quotation Updated",
+              message: `BOM has been updated for your order ${orderId}.`,
+              createdAt: new Date(),
+            }
+          ).catch(err => { console.error("Customer notify error:", err.message); });
+        }
+      } catch (notifyErr) {
+        console.error("Notification flow error (custom):", notifyErr.message);
+      }
+
       return res.status(200).json({
         success: true,
         message: "Custom BOM updated successfully",
@@ -1286,12 +1594,13 @@ exports.editBOM = async (req, res) => {
       });
     }
 
-    // INVALID TYPE
+    // INVALID serviceType
     return res.status(400).json({
       success: false,
       message: "Invalid serviceType",
     });
   } catch (err) {
+    console.error("editBOM error:", err);
     return res.status(500).json({
       success: false,
       message: "Unable to edit BOM",
@@ -1304,25 +1613,24 @@ exports.editBOM = async (req, res) => {
 exports.deleteBOM = async (req, res) => {
   try {
     const { orderId } = req.params;
+    const USER_SERVICE_URL = process.env.USER_SERVICE_URL;
 
     const order = await Order.findOne({ orderId });
     if (!order) {
       return res.status(404).json({
         success: false,
-        message: "Order not found"
+        message: "Order not found",
       });
     }
 
     if (!order.billOfMaterial) {
       return res.status(400).json({
         success: false,
-        message: "No BOM found to delete"
+        message: "No BOM found to delete",
       });
     }
 
-    // ------------------------------------------
-    // BLOCK DELETE IF USER HAS APPROVED QUOTATION
-    // ------------------------------------------
+    // BLOCK DELETE IF CLIENT HAS ALREADY APPROVED QUOTATION
     const quotationProcess = order.processes.find(
       (p) =>
         p.processName === "Quotation & Client Approval" ||
@@ -1339,23 +1647,21 @@ exports.deleteBOM = async (req, res) => {
       if (approvalStep && approvalStep.isCompleted === true) {
         return res.status(403).json({
           success: false,
-          message: "BOM cannot be deleted because user has already approved the quotation"
+          message:
+            "BOM cannot be deleted because user has already approved the quotation",
         });
       }
     }
 
-    // -----------------------------
-    // DELETE THE BOM
-    // -----------------------------
+    // DELETE BOM
     order.billOfMaterial = null;
 
-    // --------------------------------------------
-    // RESET "BOM Preparation" isCompleted = false
-    // --------------------------------------------
+    // RESET ADMIN REVIEW PROCESS → BOM PREPARATION = false
     const adminReviewProcess = order.processes.find(
       (p) =>
         p.processName === "Admin Review & BOM Calculation" ||
-        p.processName === "நிர்வாகி மதிப்பாய்வு மற்றும் பொருள் பட்டியல் (BOM) கணக்கீடு"
+        p.processName ===
+          "நிர்வாகி மதிப்பாய்வு மற்றும் பொருள் பட்டியல் (BOM) கணக்கீடு"
     );
 
     if (adminReviewProcess) {
@@ -1373,16 +1679,65 @@ exports.deleteBOM = async (req, res) => {
 
     await order.save();
 
+    // SEND NOTIFICATIONS (ADMIN + CUSTOMER)
+    try {
+      // Fetch all users from user-service
+      const usersRes = await axios.get(`${USER_SERVICE_URL}/api/getAllUsers`);
+      const users = usersRes.data?.data || [];
+      const adminUsers = users.filter((u) => u.isAdmin === true);
+
+      // Admin notification
+      const adminTitle = "BOM Deleted";
+      const adminMessage = `BOM has been deleted for Order ${orderId}.`;
+
+      await Promise.all(
+        adminUsers.map((admin) =>
+          axios
+            .put(
+              `${USER_SERVICE_URL}/api/users/${admin._id}/notifications`,
+              {
+                title: adminTitle,
+                message: adminMessage,
+                createdAt: new Date(),
+              }
+            )
+            .catch((err) => {
+              console.error("Admin notification failed:", err.message);
+            })
+        )
+      );
+
+      // Notify customer
+      const customerId =
+        order.customer;
+
+      if (customerId) {
+        await axios
+          .put(
+            `${USER_SERVICE_URL}/api/users/${customerId}/notifications`,
+            {
+              title: "Quotation Updated",
+              message: `The BOM for your order ${orderId} has been deleted and will be recalculated.`,
+              createdAt: new Date(),
+            }
+          )
+          .catch((err) => {
+            console.error("Customer notification failed:", err.message);
+          });
+      }
+    } catch (notifyErr) {
+      console.error("Notification flow error (deleteBOM):", notifyErr.message);
+    }
+
     return res.status(200).json({
       success: true,
-      message: "BOM deleted successfully and process updated"
+      message: "BOM deleted successfully and process updated",
     });
-
   } catch (err) {
     return res.status(500).json({
       success: false,
       message: "Unable to delete BOM",
-      error: err.message
+      error: err.message,
     });
   }
 };
@@ -1395,7 +1750,9 @@ exports.getBOMByOrderId = async (req, res) => {
     const order = await Order.findOne({ orderId });
 
     if (!order) {
-      return res.status(404).json({ success: false, message: "Order not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
     }
 
     if (!order.billOfMaterial) {
@@ -1409,7 +1766,6 @@ exports.getBOMByOrderId = async (req, res) => {
       success: true,
       bom: order.billOfMaterial,
     });
-
   } catch (err) {
     return res.status(500).json({
       success: false,
@@ -1419,15 +1775,18 @@ exports.getBOMByOrderId = async (req, res) => {
   }
 };
 
-// step - 5: Order Execution 
+// step - 5: Order Execution
 exports.updateOrderExecution = async (req, res) => {
   try {
     const { orderId } = req.params;
-    const { updates } = req.body; 
+    const { updates } = req.body;
+    const USER_SERVICE_URL = process.env.USER_SERVICE_URL;
 
     const order = await Order.findOne({ orderId });
     if (!order) {
-      return res.status(404).json({ success: false, message: "Order not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
     }
 
     // Strict Check — BOM must be approved
@@ -1437,7 +1796,7 @@ exports.updateOrderExecution = async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "Order Execution cannot start until BOM is approved."
+        message: "Order Execution cannot start until BOM is approved.",
       });
     }
 
@@ -1451,7 +1810,8 @@ exports.updateOrderExecution = async (req, res) => {
     if (!quotationProcess || quotationProcess.status !== "Completed") {
       return res.status(400).json({
         success: false,
-        message: "Order Execution cannot start until Quotation & Client Approval is completed."
+        message:
+          "Order Execution cannot start until Quotation & Client Approval is completed.",
       });
     }
 
@@ -1465,13 +1825,16 @@ exports.updateOrderExecution = async (req, res) => {
     if (!executionProcess) {
       return res.status(400).json({
         success: false,
-        message: "Order Execution process not found."
+        message: "Order Execution process not found.",
       });
     }
 
     // Update subProcesses based on request
     executionProcess.subProcesses.forEach((sub) => {
-      if (sub.name === "Material Procurement" || sub.name === "பொருள் கொள்முதல்") {
+      if (
+        sub.name === "Material Procurement" ||
+        sub.name === "பொருள் கொள்முதல்"
+      ) {
         if (updates.materialProcurement) {
           sub.materialProcurement = updates.materialProcurement;
           if (updates.materialProcurement === "completed") {
@@ -1513,17 +1876,40 @@ exports.updateOrderExecution = async (req, res) => {
     // Save the order
     await order.save();
 
+    // Send notification to all Admins
+    try {
+      const usersRes = await axios.get(`${USER_SERVICE_URL}/api/getAllUsers`);
+      const users = usersRes.data?.data || [];
+      const adminUsers = users.filter((u) => u.isAdmin === true);
+
+      const adminTitle = "Order Execution Updated";
+      const adminMessage = `Order ${orderId} execution has been updated.`;
+
+      await Promise.all(
+        adminUsers.map((admin) =>
+          axios.put(`${USER_SERVICE_URL}/api/users/${admin._id}/notifications`, {
+            title: adminTitle,
+            message: adminMessage,
+            createdAt: new Date(),
+          }).catch((err) => {
+            console.error("Admin notification failed:", err.message);
+          })
+        )
+      );
+    } catch (err) {
+      console.error("Failed to send admin notifications:", err.message);
+    }
+
     return res.status(200).json({
       success: true,
       message: "Order Execution updated successfully",
-      process: executionProcess
+      process: executionProcess,
     });
-
   } catch (err) {
     return res.status(500).json({
       success: false,
       message: "Unable to update Order Execution",
-      error: err.message
+      error: err.message,
     });
   }
 };

@@ -18,6 +18,14 @@ const userSchema = new mongoose.Schema(
       uploadedAt: { type: Date, default: Date.now },
     },
     isAdmin: { type: Boolean, default: false },
+    notifications: [
+      {
+        title: String,
+        message: String,
+        createdAt: { type: Date, default: Date.now },
+        isRead: { type: Boolean, default: false }
+      }
+    ]
   },
   { timestamps: true }
 );

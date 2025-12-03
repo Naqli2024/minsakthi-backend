@@ -101,6 +101,18 @@ exports.editUser = async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
+     // ADD NOTIFICATION
+    await User.findByIdAndUpdate(userId, {
+      $push: {
+        notifications: {
+          title: "Profile Updated",
+          message: "Your profile information has been updated successfully.",
+          createdAt: new Date(),
+          isRead: false
+        }
+      }
+    });
+
     res.status(200).json({
       success: true,
       message: "Profile updated successfully",
@@ -109,5 +121,30 @@ exports.editUser = async (req, res) => {
   } catch (err) {
     console.error("Edit user error:", err);
     res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.addNotification = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    await User.findByIdAndUpdate(
+      userId,
+      {
+        $push: {
+          notifications: {
+            title: req.body.title,
+            message: req.body.message,
+            createdAt: req.body.createdAt,
+            isRead: false,
+          },
+        },
+      },
+      { new: true }
+    );
+
+    res.json({ success: true, message: "Notification added" });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 };

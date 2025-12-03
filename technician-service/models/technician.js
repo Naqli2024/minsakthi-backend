@@ -40,6 +40,7 @@ const subTechnicianSchema = new Schema({
     default: "Available",
   },
   status: { type: String, enum: ["Active", "Inactive"], default: "Active" },
+  profilePhoto: { type: String }, 
 });
 
 // Organization Details Schema
@@ -60,6 +61,7 @@ const organizationDetailsSchema = new Schema({
     expiryDate: Date,
     documentFile: String,
   },
+  organizationLogo: { type: String },
   taxNumber: String,
   organisationDocuments: [
     {
@@ -121,6 +123,14 @@ const technicianSchema = new Schema(
     isVerified: { type: Boolean, default: false },
     otpCode: { type: String },
     orders: [{ orderId: String }],
+    notifications: [
+      {
+        title: { type: String },
+        message: { type: String },
+        createdAt: { type: Date, default: Date.now },
+        isRead: { type: Boolean, default: false },
+      }
+    ]
   },
   { timestamps: true }
 );

@@ -9,6 +9,24 @@ const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Generate random 4-digit OTP
 const generateOTP = () => Math.floor(1000 + Math.random() * 9000).toString();
 
+// add notification helper function
+const addNotification = async (technicianId, title, message) => {
+  await Technician.findByIdAndUpdate(
+    technicianId,
+    {
+      $push: {
+        notifications: {
+          title,
+          message,
+          createdAt: new Date(),
+          isRead: false,
+        },
+      },
+    },
+    { new: true }
+  );
+};
+
 // Step 1 - Register Technician (Individual or Organization)
 
 exports.registerTechnician = async (req, res) => {
@@ -100,6 +118,13 @@ exports.registerTechnician = async (req, res) => {
 
       await newTech.save();
 
+      // ADD NOTIFICATION
+      await addNotification(
+        newTech._id,
+        "Registration Successful",
+        "Your technician account has been created successfully and OTP has been sent."
+      );
+
       return res.status(201).json({
         message: "Technician registered successfully. OTP sent to mobile.",
       });
@@ -137,6 +162,13 @@ exports.registerTechnician = async (req, res) => {
         });
 
       // ===================== Upload Organization-Level Files =====================
+
+      // Organization Logo
+      const organizationLogo = await uploadFileToGCS(
+        req.files?.organizationLogo?.[0]
+      );
+
+      // Upload Organisation Documents
       const orgDocs = [];
       if (req.files?.organisationDocuments?.length) {
         for (let file of req.files.organisationDocuments) {
@@ -145,35 +177,32 @@ exports.registerTechnician = async (req, res) => {
         }
       }
 
+      // Commercial License Document
       const licenseDoc = await uploadFileToGCS(
         req.files?.commercialLicenseFile?.[0]
       );
 
-      // Upload organization profile photo (new)
-      const orgProfilePhoto = await uploadFileToGCS(
-        req.files?.organizationProfilePhoto?.[0]
-      );
+      // ===================== Upload Sub-Technician Profile Photos =====================
+      const technicianPhotos = [];
 
-      // ===================== Upload Technicians’ Profile Photos =====================
-      const techProfilePhotos = [];
       if (req.files?.technicianProfilePhotos?.length) {
         for (let file of req.files.technicianProfilePhotos) {
           const url = await uploadFileToGCS(file);
-          techProfilePhotos.push(url);
+          technicianPhotos.push(url);
         }
       }
 
-      // Safely attach profilePhoto to each technician in same order
+      // Attach photos to technicians by index order
       if (Array.isArray(org.technicians)) {
         org.technicians = org.technicians.map((tech, idx) => ({
           ...tech,
-          profilePhoto: techProfilePhotos[idx] || null,
+          profilePhoto: technicianPhotos[idx] || null, // <— technician profile photo
         }));
       }
 
-      // ===================== Build final Organization object =====================
+      // ===================== Final Organization Object =====================
       org.organisationDocuments = orgDocs;
-      org.organizationProfilePhoto = orgProfilePhoto || null;
+      org.organizationLogo = organizationLogo || null;
       org.commercialLicense = {
         ...org.commercialLicense,
         documentFile: licenseDoc,
@@ -188,6 +217,13 @@ exports.registerTechnician = async (req, res) => {
       });
 
       await newOrg.save();
+
+      // ADD NOTIFICATION
+      await addNotification(
+        newOrg._id,
+        "Organization Registration Successful",
+        "Your organization technician account has been created successfully and OTP has been sent."
+      );
 
       return res.status(201).json({
         message: "Organization registered successfully. OTP sent to mobile.",
@@ -236,7 +272,9 @@ exports.verifyTechnicianOTP = async (req, res) => {
 
     // Compare OTP
     if (String(technician.otpCode).trim() !== String(otpCode).trim()) {
-      return res.status(400).json({ message: "Invalid OTP. Please try again." });
+      return res
+        .status(400)
+        .json({ message: "Invalid OTP. Please try again." });
     }
 
     // OTP matched
@@ -244,8 +282,16 @@ exports.verifyTechnicianOTP = async (req, res) => {
     technician.otpCode = null;
     await technician.save();
 
+    // send notification
+    await addNotification(
+      technician._id,
+      "OTP Verified",
+      "Your OTP has been verified successfully. Please wait for admin approval."
+    );
+
     return res.status(200).json({
-      message: "OTP verified successfully. Please wait until admin verification.",
+      message:
+        "OTP verified successfully. Please wait until admin verification.",
       technicianId: technician._id,
       technicianType: technician.technicianType,
       email: technician.email || technician.organizationDetails?.email,
@@ -311,6 +357,13 @@ exports.approveTechnicianByAdmin = async (req, res) => {
 
     await technician.save();
 
+    // Add Notification
+    await addNotification(
+      technicianId,
+      "Account Approved",
+      "Your technician account has been approved by admin. You can now access all services."
+    );
+
     // Success Response
     return res.status(200).json({
       message:
@@ -319,12 +372,11 @@ exports.approveTechnicianByAdmin = async (req, res) => {
           : "Technician rejected successfully.",
       technicianId: technician._id,
       technicianType: technician.technicianType,
-      email:
-        technician.email || technician.organizationDetails?.email || null,
+      email: technician.email || technician.organizationDetails?.email || null,
       mobileNumber:
         technician.mobileNumber ||
         technician.organizationDetails?.mobileNumber ||
-        null
+        null,
     });
   } catch (error) {
     console.error("Admin Approval Error:", error);
@@ -343,7 +395,8 @@ exports.setTechnicianPassword = async (req, res) => {
     // Validate input
     if (!emailOrMobile || !createPassword || !confirmPassword) {
       return res.status(400).json({
-        message: "emailOrMobile, createPassword, and confirmPassword are required.",
+        message:
+          "emailOrMobile, createPassword, and confirmPassword are required.",
       });
     }
 
@@ -365,7 +418,8 @@ exports.setTechnicianPassword = async (req, res) => {
 
     if (!technician) {
       return res.status(404).json({
-        message: "No technician found with the provided email or mobile number.",
+        message:
+          "No technician found with the provided email or mobile number.",
       });
     }
 
@@ -397,13 +451,21 @@ exports.setTechnicianPassword = async (req, res) => {
     technician.password = hashedPassword;
     await technician.save();
 
+    // add notifications
+    await addNotification(
+      technician._id,
+      "Password Created",
+      "Your technician account password has been successfully created. You can now log in."
+    );
+
     // Respond success
     return res.status(200).json({
       message: "Password created successfully. You can now log in.",
       technicianId: technician._id,
       technicianType: technician.technicianType,
       email: technician.email || technician.organizationDetails?.email,
-      mobileNumber: technician.mobileNumber || technician.organizationDetails?.mobileNumber,
+      mobileNumber:
+        technician.mobileNumber || technician.organizationDetails?.mobileNumber,
     });
   } catch (error) {
     console.error("Set Technician Password Error:", error);
@@ -431,8 +493,8 @@ exports.loginTechnician = async (req, res) => {
         { email: emailOrMobile },
         { mobileNumber: emailOrMobile },
         { "organizationDetails.email": emailOrMobile },
-        { "organizationDetails.mobileNumber": emailOrMobile }
-      ]
+        { "organizationDetails.mobileNumber": emailOrMobile },
+      ],
     });
 
     if (!technician) {
@@ -458,7 +520,8 @@ exports.loginTechnician = async (req, res) => {
     // Check password exists
     if (!technician.password) {
       return res.status(400).json({
-        message: "You haven't created a password yet. Please create one to log in.",
+        message:
+          "You haven't created a password yet. Please create one to log in.",
       });
     }
 
@@ -511,7 +574,9 @@ exports.forgotPassword = async (req, res) => {
     const { emailOrMobile } = req.body;
 
     if (!emailOrMobile) {
-      return res.status(400).json({ message: "Email or mobile number is required." });
+      return res
+        .status(400)
+        .json({ message: "Email or mobile number is required." });
     }
 
     // Find technician (Individual or Organization)
@@ -525,7 +590,9 @@ exports.forgotPassword = async (req, res) => {
     });
 
     if (!technician) {
-      return res.status(404).json({ message: "Technician not found with provided email or mobile number." });
+      return res.status(404).json({
+        message: "Technician not found with provided email or mobile number.",
+      });
     }
 
     // Generate OTP
@@ -535,11 +602,13 @@ exports.forgotPassword = async (req, res) => {
     await technician.save();
 
     return res.status(200).json({
-      message: "OTP has been sent successfully to your registered contact."
+      message: "OTP has been sent successfully to your registered contact.",
     });
   } catch (error) {
     console.error("Forgot Password Error:", error);
-    return res.status(500).json({ message: "Internal Server Error", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Internal Server Error", error: error.message });
   }
 };
 
@@ -579,16 +648,26 @@ exports.verifyOTPAndResetPassword = async (req, res) => {
     // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     technician.password = hashedPassword;
-    technician.otpCode = null; 
+    technician.otpCode = null;
     technician.isVerified = true;
     await technician.save();
 
+    // Add Notification
+    await addNotification(
+      technician._id,
+      "Password Reset Successful",
+      "Your password has been reset successfully. You can now login with your new password."
+    );
+
     return res.status(200).json({
-      message: "Password reset successful. You can now login with your new password.",
+      message:
+        "Password reset successful. You can now login with your new password.",
     });
   } catch (error) {
     console.error("Reset Password Error:", error);
-    return res.status(500).json({ message: "Internal Server Error", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Internal Server Error", error: error.message });
   }
 };
 
@@ -626,7 +705,7 @@ exports.resendOTP = async (req, res) => {
     await technician.save();
 
     return res.status(200).json({
-      message: "New OTP has been sent successfully."
+      message: "New OTP has been sent successfully.",
     });
   } catch (error) {
     console.error("Resend OTP Error:", error);
@@ -641,7 +720,10 @@ exports.resendOTP = async (req, res) => {
 exports.getAllTechnicians = async (req, res) => {
   try {
     // Fetch all technicians excluding password & otpCode
-    const technicians = await Technician.find({}, { password: 0, otpCode: 0 }).sort({ createdAt: -1 });
+    const technicians = await Technician.find(
+      {},
+      { password: 0, otpCode: 0 }
+    ).sort({ createdAt: -1 });
 
     if (!technicians || technicians.length === 0) {
       return res.status(404).json({
@@ -677,7 +759,10 @@ exports.getTechnicianById = async (req, res) => {
     }
 
     // Find technician by ID
-    const technician = await Technician.findById(id, { password: 0, otpCode: 0 });
+    const technician = await Technician.findById(id, {
+      password: 0,
+      otpCode: 0,
+    });
 
     if (!technician) {
       return res.status(404).json({
@@ -716,8 +801,10 @@ exports.updateTechnician = async (req, res) => {
 
     // Apply all update fields (deep merge)
     Object.keys(updateFields).forEach((key) => {
-
-      if (typeof updateFields[key] === "object" && !Array.isArray(updateFields[key])) {
+      if (
+        typeof updateFields[key] === "object" &&
+        !Array.isArray(updateFields[key])
+      ) {
         // Deep merge nested objects (address, bankDetails, etc.)
         technician[key] = {
           ...technician[key],
@@ -742,16 +829,68 @@ exports.updateTechnician = async (req, res) => {
 
     await technician.save();
 
+    // Add Notification
+    await addNotification(
+      technician._id,
+      "Profile Updated",
+      "Your technician profile was updated successfully."
+    );
+
     return res.status(200).json({
       success: true,
       message: "Technician updated successfully",
       data: technician,
     });
-
   } catch (error) {
     return res.status(500).json({
       success: false,
       message: "Error updating technician",
+      error: error.message,
+    });
+  }
+};
+
+exports.addNotification = async (req, res) => {
+  try {
+    const { technicianId, title, message } = req.body;
+
+    if (!technicianId || !title || !message) {
+      return res.status(400).json({
+        success: false,
+        message: "technicianId, title, and message are required",
+      });
+    }
+
+    const updatedTech = await Technician.findByIdAndUpdate(
+      technicianId,
+      {
+        $push: {
+          notifications: {
+            title,
+            message,
+            createdAt: new Date(),
+            isRead: false,
+          },
+        },
+      },
+      { new: true }
+    );
+
+    if (!updatedTech) {
+      return res.status(404).json({
+        success: false,
+        message: "Technician not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Notification added successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error adding notification",
       error: error.message,
     });
   }

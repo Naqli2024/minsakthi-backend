@@ -28,7 +28,7 @@ const bomSchema = new mongoose.Schema(
       enum: ["Pending", "Approved", "Rejected", "None"],
       default: "Pending",
     },
-    rejectedReason: { type: String, default: null },
+    rejectionReason: { type: String, default: null },
     bomApprovedAt: { type: Date, default: null },
     bomApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
   },

@@ -12,7 +12,8 @@ const {
   resendOTP,
   getAllTechnicians,
   getTechnicianById,
-  updateTechnician
+  updateTechnician,
+  addNotification
 } = require("../controllers/technician");
 const authMiddleware = require("../middleware/authMiddleware");
 const technicianAuthMiddleware = require("../middleware/technicianAuthMiddleware");
@@ -44,5 +45,6 @@ router.post("/resend-otp", resendOTP);
 router.get("/all-technicians", getAllTechnicians);
 router.get("/technician/:id", getTechnicianById);
 router.put("/technician/:technicianId/update", updateTechnician);
+router.post("/add-technician-notification", addNotification);
 
 module.exports = router;
