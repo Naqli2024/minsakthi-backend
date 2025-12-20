@@ -13,7 +13,8 @@ const {
   getAllTechnicians,
   getTechnicianById,
   updateTechnician,
-  addNotification
+  addNotification,
+  updateTechnicianNotificationStatus
 } = require("../controllers/technician");
 const authMiddleware = require("../middleware/authMiddleware");
 const technicianAuthMiddleware = require("../middleware/technicianAuthMiddleware");
@@ -28,7 +29,7 @@ router.post(
     { name: "certifications", maxCount: 10 },
 
     // ===== Organization Fields =====
-    { name: "organizationProfilePhoto", maxCount: 1 },
+    { name: "organizationLogo", maxCount: 1 },
     { name: "organisationDocuments", maxCount: 10 },
     { name: "commercialLicenseFile", maxCount: 1 },
     { name: "technicianProfilePhotos", maxCount: 10 },
@@ -46,5 +47,9 @@ router.get("/all-technicians", getAllTechnicians);
 router.get("/technician/:id", getTechnicianById);
 router.put("/technician/:technicianId/update", updateTechnician);
 router.post("/add-technician-notification", addNotification);
+router.patch(
+  "/technicians/:technicianId/notifications/:notificationId",
+  updateTechnicianNotificationStatus
+);
 
 module.exports = router;

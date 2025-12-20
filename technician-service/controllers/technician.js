@@ -196,7 +196,7 @@ exports.registerTechnician = async (req, res) => {
       if (Array.isArray(org.technicians)) {
         org.technicians = org.technicians.map((tech, idx) => ({
           ...tech,
-          profilePhoto: technicianPhotos[idx] || null, // <— technician profile photo
+          technicianProfilePhotos: technicianPhotos[idx] || null, // <— technician profile photo
         }));
       }
 
@@ -891,6 +891,61 @@ exports.addNotification = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error adding notification",
+      error: error.message,
+    });
+  }
+};
+
+
+exports.updateTechnicianNotificationStatus = async (req, res) => {
+  try {
+    const { technicianId, notificationId } = req.params;
+    const { isRead } = req.body;
+
+    if (!technicianId || !notificationId) {
+      return res.status(400).json({
+        success: false,
+        message: "technicianId and notificationId are required",
+      });
+    }
+
+    if (isRead === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: "isRead value is required",
+      });
+    }
+
+    const readStatus = isRead === true || isRead === "true";
+
+    const result = await Technician.updateOne(
+      {
+        _id: technicianId,
+        "notifications._id": notificationId,
+      },
+      {
+        $set: {
+          "notifications.$.isRead": readStatus,
+        },
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Technician or notification not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Notification status updated successfully",
+    });
+  } catch (error) {
+    console.error("Update Technician Notification Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
       error: error.message,
     });
   }

@@ -40,7 +40,7 @@ const subTechnicianSchema = new Schema({
     default: "Available",
   },
   status: { type: String, enum: ["Active", "Inactive"], default: "Active" },
-  profilePhoto: { type: String }, 
+  technicianProfilePhotos: { type: String }, 
 });
 
 // Organization Details Schema
