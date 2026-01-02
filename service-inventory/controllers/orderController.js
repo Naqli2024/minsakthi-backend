@@ -37,6 +37,9 @@ exports.createOrder = async (req, res) => {
       });
     }
 
+    // ===============================
+    // Step 1: Read request body
+    // ===============================
     const {
       serviceType,
       orderType,
@@ -51,25 +54,35 @@ exports.createOrder = async (req, res) => {
       expectedBudget,
       issueLocation,
       materialRequired,
+
+      // Contract fields
+      projectType,
+      contractLength,
+      fromDate,
+      toDate,
     } = req.body;
 
-    // Step 1: Robust normalization helper
+    // ===============================
+    // Step 2: Normalization helper
+    // ===============================
     const normalizeText = (text = "") =>
       text
-        .replace(/\u00A0/g, " ") // non-breaking space
-        .replace(/\u202F/g, " ") // narrow non-breaking space
-        .replace(/\s+/g, " ") // collapse spaces
-        .replace(/[–—−]/g, "-") // convert all dash variants
-        .replace(/[“”]/g, '"') // smart quotes
-        .replace(/[‘’]/g, "'") // smart single quotes
+        .replace(/\u00A0/g, " ")
+        .replace(/\u202F/g, " ")
+        .replace(/\s+/g, " ")
+        .replace(/[–—−]/g, "-")
+        .replace(/[“”]/g, '"')
+        .replace(/[‘’]/g, "'")
         .trim();
 
-    const normalizedServiceName = normalizeText(serviceName);
+    const normalizedServiceType = normalizeText(serviceType).toLowerCase();
     const normalizedOrderType = normalizeText(orderType);
     const normalizedServiceScope = normalizeText(serviceScope);
-    const normalizedServiceType = normalizeText(serviceType);
+    const normalizedServiceName = normalizeText(serviceName);
 
-    // Step 2: Generate unique OrderID
+    // ===============================
+    // Step 3: Generate unique Order ID
+    // ===============================
     let orderId;
     let isDuplicate = true;
     while (isDuplicate) {
@@ -78,11 +91,14 @@ exports.createOrder = async (req, res) => {
       if (!existingOrder) isDuplicate = false;
     }
 
-    // Step 3: Upload optional files
+    // ===============================
+    // Step 4: Upload optional files
+    // ===============================
     const imageUrl = await uploadFileToGCS(
       req.files?.pictureOfTheIssue?.[0],
       orderId
     );
+
     const audioUrl = await uploadFileToGCS(
       req.files?.voiceRecordOfTheIssue?.[0],
       orderId
@@ -90,31 +106,22 @@ exports.createOrder = async (req, res) => {
 
     let service = null;
 
-    // Step 4: Find service for general/fixed types using normalized + regex
-    if (["general", "fixed"].includes(normalizedServiceType.toLowerCase())) {
+    // ===============================
+    // Step 5: Find service (general / fixed only)
+    // ===============================
+    if (["general", "fixed"].includes(normalizedServiceType)) {
       service = await Service.findOne({
         serviceType: { $regex: new RegExp(`^${normalizedServiceType}$`, "i") },
         orderType: { $regex: new RegExp(`^${normalizedOrderType}$`, "i") },
         serviceScope: {
           $regex: new RegExp(`^${normalizedServiceScope}$`, "i"),
         },
-        serviceName: { $regex: new RegExp(`^${normalizedServiceName}$`, "i") },
+        serviceName: {
+          $regex: new RegExp(`^${normalizedServiceName}$`, "i"),
+        },
       });
 
       if (!service) {
-        console.log("DEBUG NOT FOUND:", {
-          serviceType: normalizedServiceType,
-          orderType: normalizedOrderType,
-          serviceScope: normalizedServiceScope,
-          serviceName: normalizedServiceName,
-        });
-
-        const allServices = await Service.find(
-          {},
-          "serviceType orderType serviceScope serviceName"
-        );
-        console.log("AVAILABLE SERVICES:", allServices);
-
         return res.status(400).json({
           success: false,
           message: `This ${serviceType} service is not available now`,
@@ -122,7 +129,9 @@ exports.createOrder = async (req, res) => {
       }
     }
 
-    // Step 5: Build order object
+    // ===============================
+    // Step 6: Build base order object
+    // ===============================
     const orderData = {
       orderId,
       serviceType: normalizedServiceType,
@@ -130,18 +139,50 @@ exports.createOrder = async (req, res) => {
       serviceScope: normalizedServiceScope,
       category,
       serviceName: normalizedServiceName,
-      serviceRequiredDate,
       issueDescription,
       issueLocation,
       pictureOfTheIssue: imageUrl,
       voiceRecordOfTheIssue: audioUrl,
       customer: user._id,
+      materialRequired: materialRequired,
     };
 
-    if (normalizedServiceType.toLowerCase() === "custom") {
+    // ===============================
+    // Step 6.1: Date handling
+    // ===============================
+    if (normalizedOrderType === "Contract") {
+      if (!fromDate || !toDate) {
+        return res.status(400).json({
+          success: false,
+          message: "fromDate and toDate are required for Contract orders",
+        });
+      }
+
+      orderData.fromDate = fromDate;
+      orderData.toDate = toDate;
+    } else {
+      if (!serviceRequiredDate) {
+        return res.status(400).json({
+          success: false,
+          message: "serviceRequiredDate is required",
+        });
+      }
+
+      orderData.serviceRequiredDate = serviceRequiredDate;
+    }
+
+    // ===============================
+    // Step 6.2: Custom order fields
+    // ===============================
+    if (normalizedServiceType === "custom") {
       orderData.expectedBudget = expectedBudget;
       orderData.materialRequired = materialRequired;
-    } else {
+    }
+
+    // ===============================
+    // Step 6.3: General / Fixed pricing
+    // ===============================
+    if (["general", "fixed"].includes(normalizedServiceType)) {
       orderData.serviceId = service.serviceId;
       orderData.servicePrice =
         servicePrice || service.sellingPrice || service.servicePrice || 0;
@@ -149,36 +190,38 @@ exports.createOrder = async (req, res) => {
       orderData.tax = tax || 0;
     }
 
-    // Step 6: Save order
+    // ===============================
+    // Step 6.4: Contract-specific fields
+    // ===============================
+    if (
+      normalizedServiceType === "others" &&
+      normalizedOrderType === "Contract"
+    ) {
+      if (!projectType || !contractLength) {
+        return res.status(400).json({
+          success: false,
+          message: "Missing required contract details",
+        });
+      }
+
+      orderData.projectType = projectType;
+      orderData.contractLength = contractLength;
+    }
+
+    // ===============================
+    // Step 7: Save order
+    // ===============================
     const newOrder = new Order(orderData);
     await newOrder.save();
 
-    // Send Notification to the User
+    // ===============================
+    // Step 8: Notify user
+    // ===============================
     await addNotification(
       user._id,
       "Order Created",
       `Your order ${newOrder.orderId} has been created successfully.`
     );
-
-    // Fetch Admin Users from User Service
-    let adminUsers = [];
-    try {
-      const response = await axios.get(
-        `${process.env.USER_SERVICE_URL}/api/getAllUsers`
-      );
-      adminUsers = response.data.data?.filter((u) => u.isAdmin === true) || [];
-    } catch (error) {
-      console.error("Error fetching admins:", error.message);
-    }
-
-    // Send Notification to all Admins
-    for (const admin of adminUsers) {
-      await addNotification(
-        admin._id,
-        "New Order Received",
-        `A new order ${newOrder.orderId} has been placed by ${user.fullName}.`
-      );
-    }
 
     return res.status(201).json({
       success: true,
@@ -288,11 +331,16 @@ exports.deleteOrderByOrderId = async (req, res) => {
 
       orderType: order.orderType,
       serviceType: order.serviceType,
+      serviceScope: order.serviceScope,
+
+      // Non-contract
       serviceRequiredDate: order.serviceRequiredDate,
 
+      // Contract-specific (THIS WAS MISSING)
+      fromDate: order.fromDate,
+      toDate: order.toDate,
+
       issueLocation: order.issueLocation,
-      expectedBudget: order.expectedBudget,
-      materialRequired: order.materialRequired,
       servicePrice: order.servicePrice,
       discount: order.discount,
       tax: order.tax,
@@ -300,7 +348,13 @@ exports.deleteOrderByOrderId = async (req, res) => {
       issueDescription: order.issueDescription,
       pictureOfTheIssue: order.pictureOfTheIssue,
       voiceRecordOfTheIssue: order.voiceRecordOfTheIssue,
+      materialRequired: order.materialRequired,
+
       customer: order.customer,
+
+      // Contract extras
+      projectType: order.projectType,
+      contractLength: order.contractLength,
     });
 
     await archivedOrder.save();
@@ -1352,7 +1406,6 @@ exports.updateBOMStatus = async (req, res) => {
         customerMessage = `Your BOM for order ${orderId} has been rejected. Reason: ${rejectionReason}`;
       }
 
-
       // A) Notify all admins
       await Promise.all(
         adminUsers.map((admin) =>
@@ -1469,9 +1522,7 @@ exports.editBOM = async (req, res) => {
       // send notifications (admins + customer)
       try {
         // fetch admins
-        const usersRes = await axios.get(
-          `${USER_SERVICE_URL}/api/getAllUsers`
-        );
+        const usersRes = await axios.get(`${USER_SERVICE_URL}/api/getAllUsers`);
         const users = usersRes.data?.data || [];
         const adminUsers = users.filter((u) => u.isAdmin === true);
 
@@ -1481,30 +1532,31 @@ exports.editBOM = async (req, res) => {
         // notify admins in parallel (do not fail main flow on error)
         await Promise.all(
           adminUsers.map((admin) =>
-            axios.put(
-              `${USER_SERVICE_URL}/api/users/${admin._id}/notifications`,
-              {
+            axios
+              .put(`${USER_SERVICE_URL}/api/users/${admin._id}/notifications`, {
                 title: adminTitle,
                 message: adminMessage,
                 createdAt: new Date(),
-              }
-            ).catch(err => { console.error("Admin notify error:", err.message); })
+              })
+              .catch((err) => {
+                console.error("Admin notify error:", err.message);
+              })
           )
         );
 
         // determine customer id (best-effort: support different shapes)
-        const customerId =
-          order.customer;
+        const customerId = order.customer;
 
         if (customerId) {
-          await axios.put(
-            `${USER_SERVICE_URL}/api/users/${customerId}/notifications`,
-            {
+          await axios
+            .put(`${USER_SERVICE_URL}/api/users/${customerId}/notifications`, {
               title: "Quotation Updated",
               message: `BOM has been updated for your order ${orderId}.`,
               createdAt: new Date(),
-            }
-          ).catch(err => { console.error("Customer notify error:", err.message); });
+            })
+            .catch((err) => {
+              console.error("Customer notify error:", err.message);
+            });
         }
       } catch (notifyErr) {
         console.error("Notification flow error (general):", notifyErr.message);
@@ -1547,9 +1599,7 @@ exports.editBOM = async (req, res) => {
       // send notifications (admins + customer)
       try {
         // fetch admins
-        const usersRes = await axios.get(
-          `${USER_SERVICE_URL}/api/getAllUsers`
-        );
+        const usersRes = await axios.get(`${USER_SERVICE_URL}/api/getAllUsers`);
         const users = usersRes.data?.data || [];
         const adminUsers = users.filter((u) => u.isAdmin === true);
 
@@ -1558,30 +1608,31 @@ exports.editBOM = async (req, res) => {
 
         await Promise.all(
           adminUsers.map((admin) =>
-            axios.put(
-              `${USER_SERVICE_URL}/api/users/${admin._id}/notifications`,
-              {
+            axios
+              .put(`${USER_SERVICE_URL}/api/users/${admin._id}/notifications`, {
                 title: adminTitle,
                 message: adminMessage,
                 createdAt: new Date(),
-              }
-            ).catch(err => { console.error("Admin notify error:", err.message); })
+              })
+              .catch((err) => {
+                console.error("Admin notify error:", err.message);
+              })
           )
         );
 
         // determine customer id (best-effort)
-        const customerId =
-          order.customer;
+        const customerId = order.customer;
 
         if (customerId) {
-          await axios.put(
-            `${USER_SERVICE_URL}/api/users/${customerId}/notifications`,
-            {
+          await axios
+            .put(`${USER_SERVICE_URL}/api/users/${customerId}/notifications`, {
               title: "Quotation Updated",
               message: `BOM has been updated for your order ${orderId}.`,
               createdAt: new Date(),
-            }
-          ).catch(err => { console.error("Customer notify error:", err.message); });
+            })
+            .catch((err) => {
+              console.error("Customer notify error:", err.message);
+            });
         }
       } catch (notifyErr) {
         console.error("Notification flow error (custom):", notifyErr.message);
@@ -1693,14 +1744,11 @@ exports.deleteBOM = async (req, res) => {
       await Promise.all(
         adminUsers.map((admin) =>
           axios
-            .put(
-              `${USER_SERVICE_URL}/api/users/${admin._id}/notifications`,
-              {
-                title: adminTitle,
-                message: adminMessage,
-                createdAt: new Date(),
-              }
-            )
+            .put(`${USER_SERVICE_URL}/api/users/${admin._id}/notifications`, {
+              title: adminTitle,
+              message: adminMessage,
+              createdAt: new Date(),
+            })
             .catch((err) => {
               console.error("Admin notification failed:", err.message);
             })
@@ -1708,19 +1756,15 @@ exports.deleteBOM = async (req, res) => {
       );
 
       // Notify customer
-      const customerId =
-        order.customer;
+      const customerId = order.customer;
 
       if (customerId) {
         await axios
-          .put(
-            `${USER_SERVICE_URL}/api/users/${customerId}/notifications`,
-            {
-              title: "Quotation Updated",
-              message: `The BOM for your order ${orderId} has been deleted and will be recalculated.`,
-              createdAt: new Date(),
-            }
-          )
+          .put(`${USER_SERVICE_URL}/api/users/${customerId}/notifications`, {
+            title: "Quotation Updated",
+            message: `The BOM for your order ${orderId} has been deleted and will be recalculated.`,
+            createdAt: new Date(),
+          })
           .catch((err) => {
             console.error("Customer notification failed:", err.message);
           });
@@ -1857,9 +1901,40 @@ exports.updateOrderExecution = async (req, res) => {
       if (sub.name === "Work Verification" || sub.name === "பணி சரிபார்த்தல்") {
         if (updates.workVerified !== undefined) {
           sub.workVerified = updates.workVerified;
+
           if (updates.workVerified === true) {
             sub.isCompleted = true;
             sub.completedAt = new Date();
+
+            // Completion & Review → Mark as Completed
+            const completionProcess = order.processes.find(
+              (p) =>
+                p.processName === "Completion & Review" ||
+                p.processName === "முடிவு மற்றும் மதிப்பாய்வு"
+            );
+
+            if (completionProcess) {
+              const markCompletedSub = completionProcess.subProcesses.find(
+                (sp) =>
+                  sp.name === "Mark as Completed" ||
+                  sp.name === "முடிந்ததாக குறி"
+              );
+
+              if (markCompletedSub) {
+                markCompletedSub.isCompleted = true;
+                markCompletedSub.completedAt = new Date();
+              }
+
+              // If all subProcesses are completed → complete the process
+              const completionDone = completionProcess.subProcesses.every(
+                (sp) => sp.isCompleted
+              );
+
+              if (completionDone) {
+                completionProcess.status = "Completed";
+                completionProcess.completedAt = new Date();
+              }
+            }
           }
         }
       }
@@ -1887,13 +1962,15 @@ exports.updateOrderExecution = async (req, res) => {
 
       await Promise.all(
         adminUsers.map((admin) =>
-          axios.put(`${USER_SERVICE_URL}/api/users/${admin._id}/notifications`, {
-            title: adminTitle,
-            message: adminMessage,
-            createdAt: new Date(),
-          }).catch((err) => {
-            console.error("Admin notification failed:", err.message);
-          })
+          axios
+            .put(`${USER_SERVICE_URL}/api/users/${admin._id}/notifications`, {
+              title: adminTitle,
+              message: adminMessage,
+              createdAt: new Date(),
+            })
+            .catch((err) => {
+              console.error("Admin notification failed:", err.message);
+            })
         )
       );
     } catch (err) {

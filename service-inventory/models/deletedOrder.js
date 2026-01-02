@@ -8,9 +8,29 @@ const deletedOrderSchema = new mongoose.Schema(
     serviceName: { type: String },
 
     orderType: { type: String, enum: ["Repair/Maintenance", "EB Complaints", "New Installation", "Contract"] },
-    serviceType: { type: String, enum: ["general", "fixed", "custom"] },
+    serviceType: { type: String, enum: ["general", "fixed", "custom", "others"] },
     serviceScope: { type: String, enum: ["Home", "Industry"] },
-    serviceRequiredDate: { type: Date },
+    
+    // Common (Non-contract orders)
+    serviceRequiredDate: {
+      type: Date,
+      required: function () {
+        return this.orderType !== "Contract";
+      },
+    },
+    // Contract-only fields
+    fromDate: {
+      type: Date,
+      required: function () {
+        return this.orderType === "Contract";
+      },
+    },
+    toDate: {
+      type: Date,
+      required: function () {
+        return this.orderType === "Contract";
+      },
+    },
 
     issueLocation: { type: String },
     servicePrice: { type: Number },
@@ -26,6 +46,13 @@ const deletedOrderSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
+
+    // For contract order
+    projectType: {
+      type: String,
+      enum: ["newConstruction", "renovation", "expansion"],
+    },
+    contractLength: { type: String },
 
     deletedAt: {
       type: Date,

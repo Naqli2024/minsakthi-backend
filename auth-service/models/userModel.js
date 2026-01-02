@@ -4,6 +4,8 @@ const userSchema = new mongoose.Schema(
   {
     fullName: { type: String, required: true },
     emailAddress: { type: String, required: true, unique: true },
+    companyName: { type: String, unique: true },
+    companyWebsite: { type: String, unique: true },
     password: { type: String, required: true },
     phoneNumber: { type: Number, required: true },
     alternateNumber: { type: Number, required: false },
@@ -23,9 +25,9 @@ const userSchema = new mongoose.Schema(
         title: String,
         message: String,
         createdAt: { type: Date, default: Date.now },
-        isRead: { type: Boolean, default: false }
-      }
-    ]
+        isRead: { type: Boolean, default: false },
+      },
+    ],
   },
   { timestamps: true }
 );

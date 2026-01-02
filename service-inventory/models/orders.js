@@ -30,11 +30,10 @@ const bomSchema = new mongoose.Schema(
     },
     rejectionReason: { type: String, default: null },
     bomApprovedAt: { type: Date, default: null },
-    bomApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+    bomApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
   { _id: false }
 );
-
 
 const subProcessSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -49,10 +48,12 @@ const subProcessSchema = new mongoose.Schema({
   billOfTheSummary: { type: Number },
   quotation: { type: String },
   quotationConfirmation: { type: Boolean },
-  assignedTechnicians: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Technician",
-  }],
+  assignedTechnicians: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Technician",
+    },
+  ],
   materialProcurement: { type: String, enum: ["not yet", "completed"] },
   jobExecution: {
     type: String,
@@ -87,7 +88,7 @@ const orderSchema = new mongoose.Schema(
     serviceId: { type: String }, // only for general/fixed services
     serviceType: {
       type: String,
-      enum: ["general", "fixed", "custom"],
+      enum: ["general", "fixed", "custom", "others"],
       required: true,
     },
     orderType: {
@@ -104,7 +105,26 @@ const orderSchema = new mongoose.Schema(
     serviceName: { type: String, required: true },
 
     // Common fields
-    serviceRequiredDate: { type: Date, required: true },
+    // Common (Non-contract orders)
+    serviceRequiredDate: {
+      type: Date,
+      required: function () {
+        return this.orderType !== "Contract";
+      },
+    },
+    // Contract-only fields
+    fromDate: {
+      type: Date,
+      required: function () {
+        return this.orderType === "Contract";
+      },
+    },
+    toDate: {
+      type: Date,
+      required: function () {
+        return this.orderType === "Contract";
+      },
+    },
     issueDescription: { type: String },
     pictureOfTheIssue: { type: String },
     voiceRecordOfTheIssue: { type: String },
@@ -118,6 +138,13 @@ const orderSchema = new mongoose.Schema(
     expectedBudget: { type: Number },
     issueLocation: { type: String, required: true },
     materialRequired: { type: Boolean, default: false },
+
+    // For contract order
+    projectType: {
+      type: String,
+      enum: ["newConstruction", "renovation", "expansion"],
+    },
+    contractLength: { type: String },
 
     orderStatus: {
       type: String,
@@ -138,7 +165,7 @@ const orderSchema = new mongoose.Schema(
     },
     // SOP flow
     processes: [processSchema],
-    billOfMaterial: bomSchema
+    billOfMaterial: bomSchema,
   },
   { timestamps: true }
 );
